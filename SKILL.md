@@ -1,6 +1,6 @@
 ---
 name: ml-experiment-workflow
-description: Use when starting, iterating, or documenting an ML / medical-imaging experiment in a self-contained folder — covers the L0–L4 information hierarchy (code → CSV → visualizations → PLAN.md → SUMMARY.md), PLAN.md/SUMMARY.md document lifecycle, versioned results folders for buggy vs fixed runs, required per-version visualizations, detached background training, watchdogs, docs/INDEX.md cross-referencing, and archival of superseded design docs. Triggers — "set up experiment folder", "new finetune run", "v2 of this experiment", "results changed because of a flag", "write up the experiment", "archive this design doc", "make me a plot to check".
+description: Use when starting, iterating, or documenting an ML / medical-imaging experiment in a self-contained folder — covers the L0–L4 information hierarchy (code → CSV → visualizations → PLAN.md → SUMMARY.md), PLAN.md/SUMMARY.md document lifecycle, versioned results folders for buggy vs fixed runs, required per-version visualizations, mandatory wandb logging with a documented metric table, detached background training, watchdogs, docs/INDEX.md cross-referencing, and archival of superseded design docs. Triggers — "set up experiment folder", "new finetune run", "v2 of this experiment", "results changed because of a flag", "write up the experiment", "archive this design doc", "make me a plot to check", "what metrics are we logging".
 ---
 
 # ML Experiment Workflow
@@ -58,12 +58,37 @@ Skip when: a one-off script with no checkpoints and no comparison ever needed.
 
 `stage_data.py` must be idempotent (re-runs are no-ops). Symlink, never copy.
 
+## Monitoring (mandatory wandb)
+
+Every training and evaluation run **must** log to wandb. No exceptions. Local CSVs and tensorboard are L1 artifacts; wandb is the cross-version, queryable record we read against.
+
+**Run conventions:**
+- `project` = experiment folder name (e.g. `finetune10_eay131`).
+- `name` = `vN_<tag>` matching the corresponding `results_vN_<tag>/` folder.
+- `config` = full `config.yaml` dumped at `wandb.init` time (`wandb.config.update(yaml.safe_load(...))`).
+- `tags` = `["train" or "eval", "vN", "<dataset>", "<model_variant>"]`.
+- Capture `wandb.run.get_url()` at startup and write it into the **PLAN.md status header** so the user can click through.
+
+**Required PLAN.md section — `## N. Monitoring`** must list every logged metric in a table. The user reads this to confirm *what we are measuring* and *that the formula matches the published convention*. If a metric isn't in the table, don't log it; if it's logged but not in the table, the doc is wrong.
+
+| W&B key | What it measures | How it's calculated | Source |
+|---|---|---|---|
+| `train/loss_total` | combined training loss per step | weighted sum, weights from `config.loss` (e.g. `α·focal + β·dice + γ·iou`) | `training/loss_fns.py:compute()` |
+| `train/loss_dice` | dice term only | `1 − 2·∑(p·y) / (∑p + ∑y + ε)`, ε=1e-6, per-batch mean | `training/loss_fns.py:dice_loss()` |
+| `val/dsc_keyframe` | DSC on the prompted keyframe slice | `2·|p∩y| / (|p|+|y|)`, prediction binarised at 0.5 | `eval_sweep.py:eval_keyframe()` |
+| `val/dsc_propagation` | DSC on non-prompted slices | same formula, mean over non-keyframe slices in same volume | `eval_sweep.py:eval_propagation()` |
+| `val/dsc_mean` | per-volume mean DSC over all annotated slices | `mean(per_slice_dsc)` per volume, then mean over volumes | `eval_sweep.py:eval_volume()` |
+| `lr` | current learning rate | from optimizer scheduler | `training/trainer.py` |
+| `system/gpu_mem` | peak GPU memory used | `torch.cuda.max_memory_allocated()` (auto-logged) | wandb |
+
+The table above is a **template** — replace rows with your actual metrics. Required columns: **W&B key, What it measures, How it's calculated, Source**. The "How it's calculated" cell must contain the actual formula (or one-line algorithmic description), not just "DSC" or "see code".
+
 ## PLAN.md → SUMMARY.md Lifecycle
 
 **PLAN.md** is the living document, written **before code**. Structure:
 
-1. **Status header** at the very top — one paragraph, updated each iteration. Include version, date, key metric, and `→ see §N` pointing at the latest results section.
-2. **Numbered sections** (`## 1. Goal`, `## 2. Folder layout`, `## 3. Data`, `## 4. Code change`, `## 5. Training`, `## 6. Inference`, `## 7. Protocol`, …).
+1. **Status header** at the very top — one paragraph, updated each iteration. Include version, date, key metric, **wandb run URL**, and `→ see §N` pointing at the latest results section.
+2. **Numbered sections** (`## 1. Goal`, `## 2. Folder layout`, `## 3. Data`, `## 4. Code change`, `## 5. Training`, `## 6. Inference`, `## 7. Monitoring` *(the wandb metric table — required)*, `## 8. Protocol`, …).
 3. **Append, don't rewrite**: when a new version finishes, add `## 12. v2 results & root cause` and `## 13. v3 final results` rather than mutating §5/§6 in place. The plan becomes a chronological narrative; the status header always points readers to the freshest §.
 4. **Root-cause sections**: when a bug is found, write a `## N. Root cause` section that names the flag/file/line and the symptom (e.g. "keyframe DSC stuck at 0.04"), and update the *training* and *inference* sub-sections side-by-side — both must match.
 
@@ -125,6 +150,8 @@ When a root-cause fix supersedes earlier "bugs," mark the old memories `SUPERSED
 | Detached launch | L0 | `<exp>/run.sh` (nohup setsid … & disown) |
 | Current run CSVs / ckpts / logs | L1 | `<exp>/exp_log/`, `<exp>/results/` |
 | Buggy run CSVs / ckpts / logs (preserved) | L1 | `<exp>/exp_log_vN_<bug>/`, `<exp>/results_vN_<bug>/` |
+| **wandb run (mandatory)** | L1 | `wandb` project = `<exp>`, run = `vN_<tag>`; URL pinned in PLAN.md status header |
+| Metric definitions & formulas | L3 | `<exp>/PLAN.md` § Monitoring (one row per logged W&B key) |
 | **Visualizations for verification (required per version)** | **L2** | `<exp>/results*/viz/` (curves, overlays, mosaics) |
 | Plan, status header, §-numbered history (links L2 plots) | L3 | `<exp>/PLAN.md` |
 | Final one-screen write-up (links L2 plots) | L4 | `<exp>/SUMMARY.md` |
@@ -135,6 +162,8 @@ When a root-cause fix supersedes earlier "bugs," mark the old memories `SUPERSED
 
 ## Common Mistakes
 
+- **Running training/eval without wandb.** wandb is mandatory. If `wandb.init` is commented out or stubbed, stop and re-enable it before launching.
+- **Logging metrics that aren't in the PLAN.md `## Monitoring` table** (or vice versa). The table and the wandb stream must agree, key-for-key, with formulas spelled out — no "see code" placeholders.
 - **Reporting a result without an L2 plot.** CSVs are L1 — the user does not read them. Generate the visualization first, then report.
 - **Overwriting `results/` when a bug is found.** The diff (and the *plot* of the diff) is the experiment. Rename, don't overwrite.
 - **Deleting `viz/` when archiving a buggy version.** The bad plot is evidence — keep it next to its CSVs.
