@@ -1,6 +1,6 @@
 ---
 name: ml-experiment-workflow
-description: Use when starting, iterating, or documenting an ML / medical-imaging experiment in a self-contained folder — covers the L0–L4 information hierarchy (code → CSV → visualizations → PLAN.md → SUMMARY.md), PLAN.md/SUMMARY.md document lifecycle, versioned results folders for buggy vs fixed runs, required per-version visualizations, detached background training, watchdogs, docs/INDEX.md cross-referencing, and archival of superseded design docs. Triggers: "set up experiment folder", "new finetune run", "v2 of this experiment", "results changed because of a flag", "write up the experiment", "archive this design doc", "make me a plot to check".
+description: Use when starting, iterating, or documenting an ML / medical-imaging experiment in a self-contained folder — covers the L0–L4 information hierarchy (code → CSV → visualizations → PLAN.md → SUMMARY.md), PLAN.md/SUMMARY.md document lifecycle, versioned results folders for buggy vs fixed runs, required per-version visualizations, detached background training, watchdogs, docs/INDEX.md cross-referencing, and archival of superseded design docs. Triggers — "set up experiment folder", "new finetune run", "v2 of this experiment", "results changed because of a flag", "write up the experiment", "archive this design doc", "make me a plot to check".
 ---
 
 # ML Experiment Workflow
