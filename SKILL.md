@@ -23,7 +23,9 @@ Every experiment maintains five layers. Higher layers consume lower ones; the us
 | **L3** | `PLAN.md` — design + implementation + chronological §N for each version | Claude (kept live) | the user | one file, append §N per version |
 | **L4** | `SUMMARY.md` — one-screen consolidation pointing back into L3/L2/L1 | Claude (when done) | the user, downstream readers, `docs/INDEX.md` | one file, rewritten on `vN_final` |
 
-**Required deliverable rule:** a version is not "done" until its `results_vN_<tag>/viz/` exists with at least one plot the user can scan. CSVs alone are not a deliverable — they are L1. If you're tempted to report a result without producing the corresponding L2, stop and generate the plot first.
+**Required deliverable rule:** a version is not "done" until its `results/viz/` (or `results_v<N>_<tag>/viz/` after bump) contains at least one plot the user can scan. CSVs alone are not a deliverable — they are L1. If you're tempted to report a result without producing the corresponding L2, stop and generate the plot first.
+
+*At scaffold-time (before the first run), the `viz/` folder should exist but will be empty — that's fine. The "done" gate fires when reporting results, not when laying out folders.*
 
 ## When to Use
 
@@ -62,6 +64,17 @@ Skip when: a one-off script with no checkpoints and no comparison ever needed.
 
 Every training and evaluation run **must** log to wandb. No exceptions. Local CSVs and tensorboard are L1 artifacts; wandb is the cross-version, queryable record we read against.
 
+**The size of the experiment is not an exemption.** Overfit sanity checks log to wandb. 5-case smoke tests log to wandb. Single-epoch dry runs log to wandb. The reason is not "we need fancy monitoring" — it's that wandb is the only artifact that survives `rm -rf` of the workspace and lets v3 of an experiment compare against v1. JSONL + `tail -f` does not give you that.
+
+Forbidden rationalizations (each has been used before, do not repeat):
+
+| Excuse | Reality |
+|---|---|
+| "Just a 5-case overfit, JSONL is faster" | JSONL is local, ephemeral, and not cross-comparable. wandb takes 4 lines to set up. Add them. |
+| "I'll add wandb in v2 if it works" | v2 needs to compare against v1's curves, which won't exist. Wire it now. |
+| "wandb is offline / no key — let me skip it" | Run `wandb login` or set `WANDB_API_KEY`. If genuinely offline, use `mode='offline'` and sync later — never `mode='disabled'`. |
+| "Tensorboard is enough" | Tensorboard files live in `exp_log/`, which gets renamed when a bug lands. wandb's run history persists. |
+
 **Run conventions:**
 - `project` = experiment folder name (e.g. `finetune10_eay131`).
 - `name` = `vN_<tag>` matching the corresponding `results_vN_<tag>/` folder.
@@ -95,6 +108,15 @@ The table above is a **template** — replace rows with your actual metrics. Req
 **SUMMARY.md** is the consolidation, written when the experiment hits its target (or is abandoned). Structure: data → finetune → inference → results table → caveats. Numbers only, no narrative of how we got there. Keep it under one screen.
 
 ## Versioning Rule (the one that stops bugs from hiding)
+
+**Naming is fixed, not negotiable.** When you bump versions, the new folder name is **exactly** `results_v<N>_<tag>/` and `exp_log_v<N>_<tag>/`, where `<tag>` is a short bug-or-fix label (`keyframe_bypass_bug`, `with_inference_override`, `final`). Forbidden alternatives:
+
+- ❌ Bumping `experiment.name` in config and letting `out_dir` rotate.
+- ❌ `run_2/`, `attempt_3/`, `new_results/`, `latest/`.
+- ❌ Timestamp-only directories (`2026_05_03_1730/`) — they don't tell you *what* changed.
+- ❌ Overwriting `results/` and trusting git to recover the old one.
+
+The current run lives at `results/` (no version suffix) until it's bumped or finalized. On bump: `mv results results_v<N>_<tag>/` first, *then* re-run.
 
 When a bug invalidates a run:
 
@@ -173,3 +195,17 @@ When a root-cause fix supersedes earlier "bugs," mark the old memories `SUPERSED
 - **Polling a long job in the main thread.** Use `run_in_background` and a watchdog.
 - **Paraphrasing the user before archiving their words.** Verbatim → `docs/archived/`, *then* paraphrase.
 - **Letting `MEMORY.md` collect stale duplicates.** Update the existing entry; mark superseded ones explicitly.
+
+## Red Flags — STOP and re-read this skill
+
+If you find yourself thinking any of these, you are about to violate the workflow:
+
+- "It's just a sanity check / overfit run / 5 cases — wandb is overkill."
+- "I'll add SUMMARY.md / Monitoring table later when there's something to summarise."
+- "Let me bump `experiment.name` so the new run goes to a fresh `out_dir` automatically."
+- "I'll skip the formula in the Monitoring table — anyone can grep the code."
+- "I'll just rename results/ to results_old/ — same idea as `results_v1_<bug>/`."
+- "Plots aren't necessary, the CSV is right there."
+- "30-minute deadline, I'll cut the doc work and add it after launch."
+
+All of these mean: stop, scaffold the canonical layout, wire wandb, write the metric table, then launch. The skill exists because the same shortcuts have produced the same lost work before.
