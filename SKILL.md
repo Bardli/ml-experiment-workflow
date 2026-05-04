@@ -36,6 +36,48 @@ Every experiment maintains five layers. Higher layers consume lower ones; the us
 
 Skip when: a one-off script with no checkpoints and no comparison ever needed.
 
+## Iteration Protocol — Smoke Test Before Full Run
+
+Two phases. Skipping phase 1 is the most common way to waste a day of cluster time and tank the lab's LevelFS.
+
+### Phase 1 — Interactive smoke test (20–40 GB MIG, 5–10 samples)
+
+1. Request a **20 GB or 40 GB H100 MIG** interactive allocation — not a full 80 GB. (Cluster sizing rules live in the `fir-cluster` skill.)
+2. Copy or symlink **5–10 training samples** into `data/`. The whole point is fast iteration — keep it tiny.
+3. Build the full training + eval pipeline end-to-end: data loader → model → loss → optimizer step → wandb log. Wire wandb on the **very first** run (this skill's mandatory rule applies even at 5 cases).
+4. Run for enough steps that loss visibly decreases. Estimate per-epoch wall-clock for the full dataset — that estimate is your phase-2 sizing input.
+
+### Phase 1 — Live resource verification (REQUIRED, in a second terminal)
+
+Wandb dashboards lag by ~30 s and don't show CPU/RAM. While the smoke run is going, open another terminal and ssh directly into the compute node:
+
+```bash
+sq                              # find the node your job is on
+ssh <node>                      # ssh straight into it (Fir allows this)
+nvidia-smi                      # GPU memory + utilization
+htop                            # CPU
+free -h                         # RAM
+```
+
+The bar to clear, **all three**:
+
+- **GPU memory ≥ ~95%** of allocated VRAM. If only 30% used → you over-allocated, drop to a smaller MIG slice.
+- **GPU utilization ≥ ~90%** sustained. If 30–60% → dataloader / I/O bottleneck. Increase `num_workers`, prefetch, or move data closer to compute. **Do not scale to the full job until this is fixed** — the bottleneck multiplies on a bigger GPU.
+- **CPU saturation** matches the breakeven count for the GPU slice (1/3/5/12 for 1g/2g/3g/full H100).
+
+### Phase 1 — Train-set sanity inference (proves no train/infer skew)
+
+Run the same eval/inference script you'll use in phase 2, but on the **5–10 training samples**. Expected metrics: **~100% DSC / accuracy / IoU.** Anything materially lower means a train/inference flag mismatch — exactly the `keyframe_bypass_bug` class of issue this skill's versioning rule exists to recover from. Cheaper to catch in phase 1 than after a 24-hour full job.
+
+### Phase 2 — One-day full-dataset job (only after phase 1 clears all three bars)
+
+- Submit a SLURM batch job on a **full H100-80g** with `--time=1-00:00:00` (1-day jobs go on full H100, per the fir-cluster skill).
+- Save **latest** and **best** checkpoints every epoch (or every N steps for long epochs). Both, every time — `latest` for resume, `best` for eval.
+- Implement **patience-based early stopping**: halt if best validation metric hasn't improved for ~10 epochs/steps. Don't burn shared LevelFS on a flat curve.
+- Watch wandb validation curves trend upward. If they don't within the first ~10–20% of total steps, kill the job and diagnose — don't let a bad run consume the whole 24 h.
+
+> **The non-negotiable phase-1 exit gate:** wandb shows decreasing training loss + GPU memory & utilization both ~100% (verified by `nvidia-smi` on-node, not just wandb) + train-set inference metrics ~100%. **All three.** Until then you are not ready for the full dataset.
+
 ## Folder Layout (canonical, mirrors `finetune10_eay131/`)
 
 ```
@@ -185,6 +227,9 @@ When a root-cause fix supersedes earlier "bugs," mark the old memories `SUPERSED
 ## Common Mistakes
 
 - **Running training/eval without wandb.** wandb is mandatory. If `wandb.init` is commented out or stubbed, stop and re-enable it before launching.
+- **Skipping phase 1 sanity inference and discovering a train/infer flag mismatch only on full-dataset eval.** The 5–10-sample train-set inference is the cheapest way to catch this — if it returns <99% you have a bug, period.
+- **Submitting the full-dataset job before GPU utilization is verified ~100% on-node.** Wandb shows allocated memory, not actual utilization — `nvidia-smi` on the running node is the only ground truth.
+- **Skipping early-stopping and letting a flat-curve job run 24 h.** Patience early-stop is shared-LevelFS hygiene, not just a convenience.
 - **Logging metrics that aren't in the PLAN.md `## Monitoring` table** (or vice versa). The table and the wandb stream must agree, key-for-key, with formulas spelled out — no "see code" placeholders.
 - **Reporting a result without an L2 plot.** CSVs are L1 — the user does not read them. Generate the visualization first, then report.
 - **Overwriting `results/` when a bug is found.** The diff (and the *plot* of the diff) is the experiment. Rename, don't overwrite.
@@ -207,5 +252,8 @@ If you find yourself thinking any of these, you are about to violate the workflo
 - "I'll just rename results/ to results_old/ — same idea as `results_v1_<bug>/`."
 - "Plots aren't necessary, the CSV is right there."
 - "30-minute deadline, I'll cut the doc work and add it after launch."
+- "I'll just submit the full-dataset job — interactive smoke is wasted time."
+- "GPU memory looks full in wandb, that's enough — no need to ssh in and check `nvidia-smi`."
+- "Train-set inference at ~80% is good enough; we'll get 100% after more training."
 
-All of these mean: stop, scaffold the canonical layout, wire wandb, write the metric table, then launch. The skill exists because the same shortcuts have produced the same lost work before.
+All of these mean: stop, scaffold the canonical layout, wire wandb, write the metric table, run phase 1 with all three exit gates verified, then launch. The skill exists because the same shortcuts have produced the same lost work before.
