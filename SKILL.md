@@ -1,6 +1,6 @@
 ---
 name: ml-experiment-workflow
-description: Use when starting, iterating, or documenting an ML / medical-imaging experiment in a self-contained folder — covers the L0–L4 information hierarchy (code → CSV → visualizations → PLAN.md → SUMMARY.md), PLAN.md/SUMMARY.md document lifecycle, versioned results folders for buggy vs fixed runs, required per-version visualizations, mandatory wandb logging with a documented metric table, detached background training, watchdogs, docs/INDEX.md cross-referencing, and archival of superseded design docs. Triggers — "set up experiment folder", "new finetune run", "v2 of this experiment", "results changed because of a flag", "write up the experiment", "archive this design doc", "make me a plot to check", "what metrics are we logging".
+description: Use when starting, iterating, or documenting an ML / medical-imaging experiment in a self-contained folder — covers the L0–L4 information hierarchy (code → CSV → visualizations → PLAN.md → SUMMARY.md), PLAN.md/SUMMARY.md document lifecycle, versioned results folders for buggy vs fixed runs, required per-version visualizations, mandatory wandb logging with a documented metric table, mandatory per-file function manifests + repo-level docs/CODE_INDEX.md for cross-experiment code reuse, detached background training, watchdogs, docs/INDEX.md cross-referencing, and archival of superseded design docs. Triggers — "set up experiment folder", "new finetune run", "v2 of this experiment", "results changed because of a flag", "write up the experiment", "archive this design doc", "make me a plot to check", "what metrics are we logging", "is there already a function that does X", "add a helper for Y", "refactor this into utils".
 ---
 
 # ML Experiment Workflow
@@ -171,6 +171,77 @@ When a bug invalidates a run:
 
 Never `rm -rf` a buggy results folder. The diff between buggy and fixed is the experiment's most useful artifact.
 
+## Code Reuse & Code Index
+
+Cross-experiment code reuse is mandatory. Two-part rule: every file declares what's in it, and a repo-level index makes those declarations searchable. The pattern this skill exists to prevent: experiment N+1 silently re-implements (often subtly differently) a function that already exists in experiment N — and the divergence is only discovered when the two experiments' results disagree.
+
+### Per-file manifest (top of every Python file)
+
+Every `.py` file in an experiment (training, eval, inference, viz, utils, stage_data, etc.) opens with a module docstring that lists the **public functions** in the file with purpose + full typed signature. This is what future-you (or future-Claude) reads to decide "do I already have this?" without opening the body.
+
+Required format:
+
+```python
+"""eval_sweep.py — per-epoch DSC sweep over a holdout set.
+
+Functions:
+    eval_keyframe(pred_dir: Path, gt_dir: Path) -> dict[str, float]
+        DSC on the prompted keyframe slice for every case.
+        In:  prediction NIfTI dir, ground-truth NIfTI dir.
+        Out: {case_id: dsc}.
+    eval_propagation(pred_dir: Path, gt_dir: Path) -> dict[str, float]
+        Same, but excludes the keyframe (measures SAM2 propagation only).
+    eval_volume(pred_dir: Path, gt_dir: Path) -> dict[str, float]
+        Per-volume mean DSC across all annotated slices.
+"""
+```
+
+Rules:
+- List **public** functions only (skip `_underscore_helpers`).
+- Each entry: one-line purpose + signature with types, plus explicit **In:** / **Out:** lines when the types alone aren't self-explanatory (dict shapes, tensor layouts, file conventions).
+- Manifest order matches definition order in the file.
+- Signature changes update the manifest in the **same commit**. A drifted manifest is worse than no manifest.
+- If a private helper grows past ~30 lines and looks generally useful, promote it (rename, document, add to manifest).
+
+### Repo-level `docs/CODE_INDEX.md`
+
+One markdown file at the repo root maps `function → file → one-line purpose`, grouped by topic (data, training, eval, viz, infra). It's the cross-experiment search surface — the per-file manifest is the in-experiment one.
+
+Format:
+
+```markdown
+## Eval
+
+| Function | File | Purpose |
+|---|---|---|
+| `eval_keyframe` | `finetune10_eay131/eval_sweep.py` | DSC on prompted keyframe slice |
+| `eval_propagation` | `finetune10_eay131/eval_sweep.py` | DSC on non-keyframe slices |
+| `compute_per_volume_dsc` | `finetune218_eay131_split80_20/eval_volume.py` | Per-volume mean DSC |
+
+## Data staging
+
+| Function | File | Purpose |
+|---|---|---|
+| `symlink_split` | `finetune10_eay131/stage_data.py` | Idempotent train/val symlink builder |
+```
+
+### The reuse loop (mandatory, before writing any non-trivial function)
+
+1. **Grep `docs/CODE_INDEX.md` first** for the concept (`dsc`, `load_npz`, `stage_data`, `overlay`, …). If you find a match, **import it** — do not re-implement.
+2. If no exact match but a close one exists, **read its file's manifest docstring**. Extend the existing function via a parameter rather than forking it into a new experiment.
+3. Only when nothing fits, write a new function — and **update the file's manifest + `docs/CODE_INDEX.md` in the same commit** that introduces it.
+4. If you copy-paste a function from another experiment instead of importing it, that is a forking event — extract it into a shared module (`shared/`, `common/`, or a sibling `utils.py` imported by both) before the second copy lands.
+
+Forbidden rationalizations (each has been used before, do not repeat):
+
+| Excuse | Reality |
+|---|---|
+| "It's a 5-line helper, not worth indexing." | Five-line helpers proliferate fastest. The index is what stops the same DSC formula from being implemented six different ways. |
+| "I'll add it to the index after the run lands." | After the run, no one updates the index. Add the row in the **same commit** as the function. |
+| "Manifest docstrings are noise — the function is right there." | The manifest is read across experiments by people (and Claude sessions) who don't know the function exists yet. Visible signature beats `grep` archaeology. |
+| "I'll just copy-paste from `finetune10` into the new experiment." | Copy-paste forks the bug surface. Import from the original; if it has to change, change the original or extract a shared module — never run two copies of the same logic. |
+| "Types/In/Out lines are obvious from the signature." | They are obvious to *you, today*. The manifest is for the reader six months out who has to decide whether to reuse or rewrite. Spell it out. |
+
 ## Background Training & Watchdogs
 
 Long jobs MUST survive ssh/laptop close. Pattern:
@@ -220,6 +291,8 @@ When a root-cause fix supersedes earlier "bugs," mark the old memories `SUPERSED
 | Plan, status header, §-numbered history (links L2 plots) | L3 | `<exp>/PLAN.md` |
 | Final one-screen write-up (links L2 plots) | L4 | `<exp>/SUMMARY.md` |
 | Repo-level map | — | `docs/INDEX.md` |
+| **Per-file function manifest (mandatory)** | L0 | top-of-file docstring in every `.py` — public functions with typed signatures + In/Out |
+| **Cross-experiment code index (mandatory)** | — | `docs/CODE_INDEX.md` — grep here BEFORE writing a new function |
 | Superseded design | — | `docs/archived/<date>-<name>-superseded.md` |
 | User's exact words on a design call | — | `docs/archived/<date>-<topic>-userquote.md` |
 | Cross-session state | — | `memory/project_<name>.md` |
@@ -240,6 +313,10 @@ When a root-cause fix supersedes earlier "bugs," mark the old memories `SUPERSED
 - **Polling a long job in the main thread.** Use `run_in_background` and a watchdog.
 - **Paraphrasing the user before archiving their words.** Verbatim → `docs/archived/`, *then* paraphrase.
 - **Letting `MEMORY.md` collect stale duplicates.** Update the existing entry; mark superseded ones explicitly.
+- **Re-implementing a function that already exists in another experiment** because nobody grepped `docs/CODE_INDEX.md`. The reuse loop is the cheapest step in this workflow — skipping it produces silent divergence that only surfaces when two experiments' numbers disagree.
+- **Adding a function without a top-of-file manifest entry, or without a row in `docs/CODE_INDEX.md`.** Undocumented functions are invisible to the next session — they will be re-implemented.
+- **Copy-pasting a helper from one experiment into another.** That is a forking event. Import from the original or extract to a shared module before the second copy lands.
+- **Letting a manifest drift from the actual signatures.** A wrong manifest is worse than none — it sends readers down the wrong path. Update it in the same commit as the signature change.
 
 ## Red Flags — STOP and re-read this skill
 
@@ -255,5 +332,9 @@ If you find yourself thinking any of these, you are about to violate the workflo
 - "I'll just submit the full-dataset job — interactive smoke is wasted time."
 - "GPU memory looks full in wandb, that's enough — no need to ssh in and check `nvidia-smi`."
 - "Train-set inference at ~80% is good enough; we'll get 100% after more training."
+- "Quick helper, no need to add a manifest line or update `CODE_INDEX.md`."
+- "I'll just copy this function over from the other experiment — faster than importing."
+- "I'll grep for it later if I need it again."
+- "Manifest is obvious from the signature, skipping it."
 
-All of these mean: stop, scaffold the canonical layout, wire wandb, write the metric table, run phase 1 with all three exit gates verified, then launch. The skill exists because the same shortcuts have produced the same lost work before.
+All of these mean: stop, scaffold the canonical layout, wire wandb, write the metric table, **grep `docs/CODE_INDEX.md` before writing a new function**, run phase 1 with all three exit gates verified, then launch. The skill exists because the same shortcuts have produced the same lost work before.
