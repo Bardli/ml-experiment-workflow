@@ -1,6 +1,6 @@
 ---
 name: ml-experiment-workflow
-description: Use when starting, iterating, or documenting an ML / medical-imaging experiment in a self-contained folder — covers the L0–L4 information hierarchy (code → CSV → visualizations → PLAN.md → SUMMARY.md), PLAN.md/SUMMARY.md document lifecycle, versioned results folders for buggy vs fixed runs, required per-version visualizations, mandatory wandb logging with a documented metric table, mandatory per-file function manifests + repo-level docs/CODE_INDEX.md for cross-experiment code reuse, detached background training, watchdogs, docs/INDEX.md cross-referencing, and archival of superseded design docs. Triggers — "set up experiment folder", "new finetune run", "v2 of this experiment", "results changed because of a flag", "write up the experiment", "archive this design doc", "make me a plot to check", "what metrics are we logging", "is there already a function that does X", "add a helper for Y", "refactor this into utils".
+description: Use when starting, iterating, or documenting an ML / medical-imaging experiment in a self-contained folder — covers the L0–L4 information hierarchy (code → CSV → visualizations → PLAN.md → SUMMARY.md), PLAN.md/SUMMARY.md document lifecycle, versioned results folders for buggy vs fixed runs, required per-version visualizations, mandatory wandb logging with a documented metric table, mandatory per-file function manifests + repo-level docs/CODE_INDEX.md for cross-experiment code reuse, detached background training, watchdogs, docs/INDEX.md cross-referencing, archival of superseded design docs, and a mandatory repo-root CLAUDE.md (skills list + folder tree + env + TODO) so every Claude session orients without grepping. Triggers — "set up experiment folder", "new finetune run", "v2 of this experiment", "results changed because of a flag", "write up the experiment", "archive this design doc", "make me a plot to check", "what metrics are we logging", "is there already a function that does X", "add a helper for Y", "refactor this into utils".
 ---
 
 # ML Experiment Workflow
@@ -257,6 +257,75 @@ echo $! > exp_log/train.pid
 
 Pair with a watchdog (background `Bash` tool call) that tails the log until the process exits and reports completion + final epoch + best metric. Do NOT poll in a sleep loop from the main thread — use `run_in_background`.
 
+## Repo-level `CLAUDE.md` (mandatory — auto-loaded orientation)
+
+`CLAUDE.md` at the repo root is auto-loaded into every Claude Code session in this project. It is the **first thing Claude reads**, before any `grep` / `ls` / `find`. Without it, every new session burns tokens (and your time) re-discovering the layout. With it, Claude jumps straight to the right experiment folder, the right venv, the right cluster account, and the right next task.
+
+**Required sections** (keep the whole file under ~200 lines so it stays in context):
+
+```markdown
+# <repo name>
+
+One-paragraph project purpose.
+
+## Skills to invoke (auto-load)
+
+- `ml-experiment-workflow` — for any new experiment / vN bump / SUMMARY write-up
+- `ccdb-clusters` — for sbatch / module / account / seff work on Fir
+- `medical-imaging-pipeline` — DICOM ↔ NIfTI conversion, RTSTRUCT rasterisation
+- `nnunet-converter` — when prepping data for nnUNet
+- `<other repo-specific skills>`
+
+## Folder structure (read this instead of `find .`)
+
+```
+<repo>/
+├── docs/
+│   ├── INDEX.md            map of all experiments
+│   ├── CODE_INDEX.md       cross-experiment function index — grep BEFORE writing
+│   └── DEVLOG.md           running dev log
+├── experiments/
+│   ├── full_train/runs/baseline/        production training run
+│   ├── full_train/runs/baseline-smoke/  phase-1 smoke test
+│   └── <expN>/PLAN.md                   per-experiment plan
+├── training/                 model + trainer + loss
+├── sam2/                     model architecture
+├── scripts/ours/             our launchers / one-off helpers
+├── data/                     symlinks only (read-only shared dataset)
+└── .venv/                    project venv (python 3.11.5, triton 3.6.0)
+```
+
+(Annotate every top-level dir in one line. If a dir is large, link its own README.)
+
+## Environment
+
+- Cluster: Fir (`$CC_CLUSTER=fir`); use `def-jma-ab_gpu` GPU account by default — verify with `~/.claude/skills/ccdb-clusters/scripts/show-fairshare.sh`
+- Venv: `source /scratch/baidu/<repo>/.venv/bin/activate` (or whatever this repo uses)
+- Module loads needed before `claude`: `module load nodejs/20.16.0 python/3.11.5`
+- Storage: never write to `$HOME` — use `$SCRATCH`
+
+## Conventions
+
+- All training submitted via `sbatch`, never on the login node.
+- Wandb is mandatory on every run, including 5-case smoke tests (see `ml-experiment-workflow`).
+- Versioned results: never overwrite `results/` — rename to `results_vN_<bug>/`.
+
+## TODO
+
+- [ ] <next concrete step the user wants done>
+- [ ] <…>
+- [x] <recently completed, kept here for handoff context until rolled into PLAN.md / DEVLOG.md>
+```
+
+**Maintenance rules:**
+
+1. **Update `## TODO` at the end of every working session.** A future Claude (or a Monday-morning-you) reads this list to pick up the work without replaying the chat. Move completed items to `[x]` for one session, then prune them into `docs/DEVLOG.md` or the relevant `PLAN.md`.
+2. **Keep the folder tree current.** When you add `experiments/<newexp>/`, add a one-line entry in `CLAUDE.md`. Same commit. (A wrong tree is worse than no tree — Claude will trust it and not re-grep.)
+3. **Skills list is curated, not exhaustive.** Only list skills actually used in this repo. Don't paste the full installed-skills catalogue.
+4. **No secrets.** `CLAUDE.md` is checked in. Personal account names / paths that shouldn't be public belong in `~/.claude/projects/.../memory/personal_*.md`, not here.
+
+If a session opens and `CLAUDE.md` is missing, stale, or doesn't list the skills → the first action is to repair it, not to start grepping.
+
 ## docs/INDEX.md and Archival
 
 The repo's `docs/INDEX.md` is the map. When an experiment finishes:
@@ -290,6 +359,7 @@ When a root-cause fix supersedes earlier "bugs," mark the old memories `SUPERSED
 | **Visualizations for verification (required per version)** | **L2** | `<exp>/results*/viz/` (curves, overlays, mosaics) |
 | Plan, status header, §-numbered history (links L2 plots) | L3 | `<exp>/PLAN.md` |
 | Final one-screen write-up (links L2 plots) | L4 | `<exp>/SUMMARY.md` |
+| **Auto-loaded session orientation (mandatory)** | — | `CLAUDE.md` at repo root — skills list, folder tree, env, TODO |
 | Repo-level map | — | `docs/INDEX.md` |
 | **Per-file function manifest (mandatory)** | L0 | top-of-file docstring in every `.py` — public functions with typed signatures + In/Out |
 | **Cross-experiment code index (mandatory)** | — | `docs/CODE_INDEX.md` — grep here BEFORE writing a new function |
@@ -313,6 +383,7 @@ When a root-cause fix supersedes earlier "bugs," mark the old memories `SUPERSED
 - **Polling a long job in the main thread.** Use `run_in_background` and a watchdog.
 - **Paraphrasing the user before archiving their words.** Verbatim → `docs/archived/`, *then* paraphrase.
 - **Letting `MEMORY.md` collect stale duplicates.** Update the existing entry; mark superseded ones explicitly.
+- **Missing or stale `CLAUDE.md`.** Without it, every new session re-greps the tree to find the venv, the experiments folder, the cluster account. Repair it before starting any other task. The TODO list at the bottom is the handoff between sessions — keep it current.
 - **Re-implementing a function that already exists in another experiment** because nobody grepped `docs/CODE_INDEX.md`. The reuse loop is the cheapest step in this workflow — skipping it produces silent divergence that only surfaces when two experiments' numbers disagree.
 - **Adding a function without a top-of-file manifest entry, or without a row in `docs/CODE_INDEX.md`.** Undocumented functions are invisible to the next session — they will be re-implemented.
 - **Copy-pasting a helper from one experiment into another.** That is a forking event. Import from the original or extract to a shared module before the second copy lands.
